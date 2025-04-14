@@ -1,0 +1,176 @@
+---
+title: "Inference Additional Project"
+output: word_document
+date: "2025-04-13"
+---
+
+```{r}
+# Load libraries
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+```
+```{r}
+data_url <- "https://www2.stat.duke.edu/~pdh10/FCBS/Exercises/interexp.dat"
+df <- read.table(data_url, header = FALSE, col.names = c("A", "B"))
+df[df == "."] <- NA
+df[] <- lapply(df, as.numeric)
+```
+```{r}
+df <- df[!(is.na(df$A) & is.na(df$B)), ]
+```
+```{r}
+complete <- na.omit(df)
+missing_A <- df[is.na(df$A) & !is.na(df$B), ]
+missing_B <- df[!is.na(df$A) & is.na(df$B), ]
+```
+```{r}
+mu <- colMeans(complete)
+Sigma <- cov(complete)
+
+```
+
+```{r}
+loglik_bivariate <- function(df_original, mu, Sigma) {
+  ll <- 0
+  for (i in 1:nrow(df_original)) {
+    obs <- !is.na(df_original[i, ])
+    if (sum(obs) == 0) next
+    x_obs <- unlist(df_original[i, obs])
+    mu_obs <- mu[obs]
+    Sigma_obs <- Sigma[obs, obs, drop = FALSE]
+    if (det(Sigma_obs) <= 0 || any(is.na(Sigma_obs))) next
+    diff <- matrix(x_obs - mu_obs, ncol = 1)
+    ll <- ll - 0.5 * (log(det(Sigma_obs)) + t(diff) %*% solve(Sigma_obs) %*% diff + length(x_obs) * log(2 * pi))
+  }
+  return(ll)
+}
+```
+
+```{r}
+df_imputed <- df
+prev_ll <- -Inf
+tolerance <- 1e-4
+
+for (iteration in 1:100) {
+  # E-step: Fill missing values
+  for (i in 1:nrow(df_imputed)) {
+    a <- df_imputed$A[i]
+    b <- df_imputed$B[i]
+    
+    if (is.na(a) && !is.na(b)) {
+      df_imputed$A[i] <- mu[1] + (Sigma[1, 2] / Sigma[2, 2]) * (b - mu[2])
+    } else if (!is.na(a) && is.na(b)) {
+      df_imputed$B[i] <- mu[2] + (Sigma[2, 1] / Sigma[1, 1]) * (a - mu[1])
+    }
+  }
+  
+  # M-step: Update parameters
+  mu_new <- colMeans(df_imputed)
+  Sigma_new <- cov(df_imputed)
+  new_ll <- loglik_bivariate(df, mu_new, Sigma_new)
+  
+  cat(sprintf("Iter %d | Log-Likelihood: %.4f\n", iteration, new_ll))
+  if (abs(new_ll - prev_ll) < tolerance || is.na(new_ll)) break
+  
+  mu <- mu_new
+  Sigma <- Sigma_new
+  prev_ll <- new_ll
+}
+```
+
+```{r}
+df_imputed$Status <- ifelse(is.na(df$A) | is.na(df$B), "Imputed", "Observed")
+df_imputed <- df_imputed[complete.cases(df_imputed), ]
+```
+
+```{r}
+before <- summarise(complete,
+                    Mean_A = mean(A), Var_A = var(A),
+                    Mean_B = mean(B), Var_B = var(B)
+)
+after <- summarise(df_imputed,
+                   Mean_A = mean(A), Var_A = var(A),
+                   Mean_B = mean(B), Var_B = var(B)
+)
+
+# Restructure summary stats
+results <- data.frame(
+  Variable = c("A", "B"),
+  Before_Mean = c(before$Mean_A, before$Mean_B),
+  Before_Var = c(before$Var_A, before$Var_B),
+  After_Mean = c(after$Mean_A, after$Mean_B),
+  After_Var = c(after$Var_A, after$Var_B)
+)
+
+cat("\n📊 Summary Statistics Before and After Imputation:\n")
+print(results)
+```
+
+```{r}
+# Define custom color palette
+custom_colors <- c("Observed" = "#1f77b4", "Imputed" = "#ff7f0e")
+
+# Histogram - Stimulus A
+g1 <- ggplot(df_imputed, aes(x = A, fill = Status)) +
+  geom_histogram(alpha = 0.7, bins = 10, position = 'identity', color = "black") +
+  scale_fill_manual(values = custom_colors) +
+  theme_minimal() + 
+  labs(title = "Histogram - Stimulus A", x = "Stimulus A", y = "Count")
+
+# Histogram - Stimulus B
+g2 <- ggplot(df_imputed, aes(x = B, fill = Status)) +
+  geom_histogram(alpha = 0.7, bins = 10, position = 'identity', color = "black") +
+  scale_fill_manual(values = custom_colors) +
+  theme_minimal() +
+  labs(title = "Histogram - Stimulus B", x = "Stimulus B", y = "Count")
+
+# Boxplot - Stimulus A
+g3 <- ggplot(df_imputed, aes(x = Status, y = A, fill = Status)) +
+  geom_boxplot(alpha = 0.8, outlier.color = "gray30", outlier.shape = 16) +
+  scale_fill_manual(values = custom_colors) +
+  theme_minimal() +
+  labs(title = "Boxplot - Stimulus A", x = "", y = "Stimulus A")
+
+# Boxplot - Stimulus B
+g4 <- ggplot(df_imputed, aes(x = Status, y = B, fill = Status)) +
+  geom_boxplot(alpha = 0.8, outlier.color = "gray30", outlier.shape = 16) +
+  scale_fill_manual(values = custom_colors) +
+  theme_minimal() +
+  labs(title = "Boxplot - Stimulus B", x = "", y = "Stimulus B")
+
+# Scatter plot - Before imputation (complete cases only)
+g5 <- ggplot(complete, aes(x = A, y = B)) +
+  geom_point(color = "#2ca02c", size = 2, alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "Scatter Plot (Before Imputation)", x = "Stimulus A", y = "Stimulus B")
+
+# Scatter plot - After imputation (with source)
+g6 <- ggplot(df_imputed, aes(x = A, y = B, color = Status)) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_color_manual(values = custom_colors) +
+  theme_minimal() +
+  labs(title = "Scatter Plot (After Imputation)", x = "Stimulus A", y = "Stimulus B")
+
+# Define your custom colors (same as before)
+custom_colors <- c("Observed" = "#1f77b4", "Imputed" = "#ff7f0e")
+
+# Density Plot - Stimulus A
+g7 <- ggplot(df_imputed, aes(x = A, fill = Status, color = Status)) +
+  geom_density(alpha = 0.4, size = 1.2) +
+  scale_fill_manual(values = custom_colors) +
+  scale_color_manual(values = custom_colors) +
+  theme_minimal() +
+  labs(title = "Density Plot - Stimulus A", x = "Stimulus A", y = "Density")
+
+# Density Plot - Stimulus B
+g8 <- ggplot(df_imputed, aes(x = B, fill = Status, color = Status)) +
+  geom_density(alpha = 0.4, size = 1.2) +
+  scale_fill_manual(values = custom_colors) +
+  scale_color_manual(values = custom_colors) +
+  theme_minimal() +
+  labs(title = "Density Plot - Stimulus B", x = "Stimulus B", y = "Density")
+
+grid.arrange(g1, g2, g3, g4, g5, g6, g7, g8, ncol = 2)
+
+```
